@@ -7,12 +7,13 @@ shapes accepted or returned by extension hooks.
 from __future__ import annotations
 
 from . import errors as errors
-from .errors import HttpStatusError
 
 from abc import ABC, abstractmethod
 import datetime as datetime
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any, Literal, NotRequired, Protocol, TypedDict, TypeAlias, TypeVar
+from typing import Any, Literal, Mapping, NotRequired, Protocol, TypedDict, TypeAlias, TypeVar
+
+HttpStatusError = errors.HttpStatusError
 
 ApiVersion: TypeAlias = Literal[1]
 """Wolpi extension API versions currently supported by the runtime."""
@@ -20,20 +21,20 @@ ApiVersion: TypeAlias = Literal[1]
 JsonPrimitive: TypeAlias = str | int | float | bool | None
 """Scalar JSON value accepted by Wolpi APIs."""
 
-JsonValue: TypeAlias = JsonPrimitive | dict[str, "JsonValue"] | list["JsonValue"]
+JsonValue: TypeAlias = JsonPrimitive | "JsonObject" | list["JsonValue"]
 """Recursive JSON value used for `info.json` augmentation and error details."""
 
 JsonObject: TypeAlias = dict[str, JsonValue]
 """JSON object mapping string keys to JSON values."""
 
-HeaderValues: TypeAlias = Sequence[str]
-"""HTTP header values for a single header name."""
+ImmutableJsonValue: TypeAlias = JsonPrimitive | "ImmutableJsonObject" | Sequence["ImmutableJsonValue"]
+"""Immutable JSON input value."""
 
-HeaderMap: TypeAlias = Mapping[str, HeaderValues]
-"""HTTP headers passed to the `authorize()` hook."""
+ImmutableJsonObject: TypeAlias = Mapping[str, ImmutableJsonValue]
+"""Immutable JSON input object."""
 
-ExtraHeaders: TypeAlias = Mapping[str, Sequence[str]]
-"""Additional response headers returned from `pre_format()`."""
+HttpHeaders: TypeAlias = Mapping[str, Sequence[str]]
+"""HTTP headers."""
 
 ExtensionHooks: TypeAlias = Literal[
     "pre_process_image",
@@ -47,27 +48,6 @@ ExtensionHooks: TypeAlias = Literal[
 
 IIIFQuality: TypeAlias = Literal["color", "gray", "bitonal"]
 """Supported IIIF quality values."""
-
-ImageSizeLike: TypeAlias = "ImageSize" | "ImageSizeDict"
-"""Width and height pair accepted by helper APIs."""
-
-TileSizeLike: TypeAlias = "TileSize" | "TileSizeDict"
-"""Tile-size description accepted by resolver metadata."""
-
-ImageInfoLike: TypeAlias = "ImageInfo" | "ImageInfoDict"
-"""Image metadata returned from `resolve()` or received by image hooks."""
-
-CacheInfoLike: TypeAlias = "CacheInfo" | "CacheInfoDict"
-"""Cache metadata returned from `resolve()`."""
-
-ImageApiRequestLike: TypeAlias = "ImageApiRequest" | "ImageApiRequestDict"
-"""IIIF request object accepted by parser helpers."""
-
-ExtensionInfoLike: TypeAlias = "ExtensionInfo" | "_ExtensionInfoObject"
-"""Value returned from `info()`, either as a `TypedDict` or an attribute object."""
-
-EncodedImageLike: TypeAlias = "EncodedImage" | "_EncodedImageObject"
-"""Value returned from `pre_format()`."""
 
 _T = TypeVar("_T")
 
@@ -132,7 +112,7 @@ class ImageSize(Protocol):
     height: int
 
 class ImageSizeDict(TypedDict):
-    """Dictionary form of `ImageSize`."""
+    """Dictionary form used in nested resolver return metadata."""
 
     width: int
     height: int
@@ -145,14 +125,14 @@ class TileSize(Protocol):
     scaleFactors: Sequence[int]
 
 class TileSizeDict(TypedDict):
-    """Dictionary form of `TileSize`."""
+    """Dictionary form used in nested resolver return metadata."""
 
     width: int
     scaleFactors: list[int]
     height: NotRequired[int | None]
 
 class ImageInfo(Protocol):
-    """Metadata about an image returned by `resolve()`.
+    """Image metadata exposed to Python as an attribute object.
 
     This metadata can avoid loading the image just to populate `info.json`.
     """
@@ -163,7 +143,7 @@ class ImageInfo(Protocol):
     tileSizes: Sequence[TileSize]
 
 class ImageInfoDict(TypedDict):
-    """Dictionary form of `ImageInfo`."""
+    """Dictionary form used in resolver return dicts."""
 
     format: NotRequired[str | None]
     nativeSize: ImageSizeDict
@@ -171,27 +151,23 @@ class ImageInfoDict(TypedDict):
     tileSizes: list[TileSizeDict]
 
 class CacheInfo(Protocol):
-    """Optional HTTP cache metadata associated with a resolved image."""
+    """Optional HTTP cache metadata exposed to Python as an attribute object."""
 
     eTag: str | None
+
+    #: If using a string, must be formatted according to ISO-8601
     lastModified: datetime.datetime | str | None
 
 class CacheInfoDict(TypedDict, total=False):
-    """Dictionary form of `CacheInfo`."""
+    """Dictionary form used in resolver return dicts."""
 
     eTag: str
+
+    #: If using a string, must be formatted according to ISO-8601
     lastModified: datetime.datetime | str
 
 class CropRectangle(Protocol):
     """Rectangular crop region in non-fractional pixels."""
-
-    x: int
-    y: int
-    width: int
-    height: int
-
-class CropRectangleDict(TypedDict):
-    """Dictionary form of `CropRectangle`."""
 
     x: int
     y: int
@@ -204,14 +180,8 @@ class Rotation(Protocol):
     degrees: float
     mirror: bool
 
-class RotationDict(TypedDict):
-    """Dictionary form of `Rotation`."""
-
-    degrees: float
-    mirror: bool
-
 class ImageApiRequest(Protocol):
-    """IIIF Image API request object passed to image-processing hooks.
+    """IIIF Image API request object exposed to Python as an attribute object.
 
     Note that `version` is exposed to Python as a Java host enum object.
     """
@@ -224,16 +194,6 @@ class ImageApiRequest(Protocol):
     qualitySpec: str
     formatSpec: str
 
-class ImageApiRequestDict(TypedDict):
-    """Dictionary form accepted by `imageRequestParser.toCanonicalForm()`."""
-
-    identifier: str
-    version: IIIFVersionInput
-    cropSpec: str
-    sizeSpec: str
-    rotationSpec: str
-    qualitySpec: str
-    formatSpec: str
 
 class ExtensionInfo(TypedDict):
     """Information returned by the `info()` hook."""
@@ -242,40 +202,21 @@ class ExtensionInfo(TypedDict):
     name: str
     description: str
 
-class _ExtensionInfoObject(Protocol):
-    """Attribute-object form accepted wherever `ExtensionInfo` is accepted."""
-
-    apiVersion: ApiVersion
-    name: str
-    description: str
-
 class _ResolvedMeta(TypedDict, total=False):
     """Shared metadata fields accepted by resolver return objects."""
 
-    imageInfo: ImageInfoLike
-    cacheInfo: CacheInfoLike
+    imageInfo: ImageInfoDict
+    cacheInfo: CacheInfoDict
 
 class FilesystemResolvedImage(_ResolvedMeta):
     """An image file in a file system accessible to Wolpi."""
 
     path: str
 
-class _FilesystemResolvedImageObject(Protocol):
-    """Attribute-object form accepted wherever `FilesystemResolvedImage` is accepted."""
-
-    path: str
-    def __getattr__(self, name: str) -> Any: ...
-
 class BinaryResolvedImage(_ResolvedMeta):
     """A raw encoded image blob that will be decoded by libvips."""
 
     rawData: bytes | bytearray
-
-class _BinaryResolvedImageObject(Protocol):
-    """Attribute-object form accepted wherever `BinaryResolvedImage` is accepted."""
-
-    rawData: bytes | bytearray
-    def __getattr__(self, name: str) -> Any: ...
 
 class HttpResolvedImage(_ResolvedMeta):
     """An image accessible via HTTP(S), optionally with custom request headers."""
@@ -283,24 +224,12 @@ class HttpResolvedImage(_ResolvedMeta):
     url: str
     headers: NotRequired[Mapping[str, str]]
 
-class _HttpResolvedImageObject(Protocol):
-    """Attribute-object form accepted wherever `HttpResolvedImage` is accepted."""
-
-    url: str
-    def __getattr__(self, name: str) -> Any: ...
-
 class SourceNotModified(TypedDict):
     """Marker result indicating that the source has not changed since the client's cached copy."""
 
     notModified: Literal[True]
-    imageInfo: NotRequired[ImageInfoLike]
-    cacheInfo: NotRequired[CacheInfoLike]
-
-class _SourceNotModifiedObject(Protocol):
-    """Attribute-object form accepted wherever `SourceNotModified` is accepted."""
-
-    notModified: Literal[True]
-    def __getattr__(self, name: str) -> Any: ...
+    imageInfo: NotRequired[ImageInfoDict]
+    cacheInfo: NotRequired[CacheInfoDict]
 
 class CustomSourceResolvedImage(Protocol):
     """Custom data source returned from `resolve()`.
@@ -331,41 +260,20 @@ class CustomSourceResolvedImage(Protocol):
 
 ResolvedImage: TypeAlias = (
     FilesystemResolvedImage
-    | _FilesystemResolvedImageObject
     | BinaryResolvedImage
-    | _BinaryResolvedImageObject
     | HttpResolvedImage
-    | _HttpResolvedImageObject
     | CustomSourceResolvedImage
     | SourceNotModified
-    | _SourceNotModifiedObject
 )
 """Value returned from the `resolve()` hook."""
 
-class ImageSource(Protocol):
-    """Java wrapper around a resolved image plus identifier and optional metadata."""
-
-    identifier: str
-    resolvedImage: ResolvedImage
-    imageInfo: ImageInfo | None
-    cacheInfo: CacheInfo | None
 
 class EncodedImage(TypedDict):
-    """Encoded image data returned by the `pre_format()` hook.
-
-    `data` may be a Java `ByteBuffer` or a Python byte container.
-    """
+    """Encoded image data returned by the `pre_format()` hook."""
 
     data: bytes | bytearray | ByteBuffer
     contentType: str
-    extraHeaders: NotRequired[ExtraHeaders]
-
-class _EncodedImageObject(Protocol):
-    """Attribute-object form accepted wherever `EncodedImage` is accepted."""
-
-    data: bytes | bytearray | ByteBuffer
-    contentType: str
-    def __getattr__(self, name: str) -> Any: ...
+    extraHeaders: NotRequired[HttpHeaders]
 
 class CounterMetric(Protocol):
     """Counter metric that should only increase."""
@@ -470,7 +378,7 @@ class ImageRequestParserProxy(Protocol):
     Wolpi's parsing and validation of official IIIF request syntax.
     """
 
-    def parseRegion(self, spec: str, source_size: ImageSizeLike) -> CropRectangle:
+    def parseRegion(self, spec: str, source_size: ImageSize) -> CropRectangle:
         """Parse a region specification.
 
         Supports `full`, `square`, `x,y,w,h`, and `pct:x,y,w,h`.
@@ -478,7 +386,7 @@ class ImageRequestParserProxy(Protocol):
         ...
 
     def parseSize(
-        self, version: IIIFVersionInput, spec: str, source_size: ImageSizeLike
+        self, version: IIIFVersionInput, spec: str, source_size: ImageSize
     ) -> ImageSize:
         """Parse a size specification for IIIF v2 or v3.
 
@@ -500,7 +408,7 @@ class ImageRequestParserProxy(Protocol):
         ...
 
     def toCanonicalForm(
-        self, request: ImageApiRequestLike, source_size: ImageSizeLike
+        self, request: ImageApiRequest, source_size: ImageSize
     ) -> ImageApiRequest | None:
         """Convert a request into its canonical form, or return `None` if unavailable."""
         ...
@@ -518,7 +426,7 @@ class ExtensionGuestContext(Protocol):
     httpClient: HttpClient
     baseUri: str | None
 
-InfoHook: TypeAlias = Callable[[], ExtensionInfoLike]
+InfoHook: TypeAlias = Callable[[], ExtensionInfo]
 """Hook returning static extension metadata."""
 
 SetupHook: TypeAlias = Callable[[], None]
@@ -535,7 +443,7 @@ SkippableHooksHook: TypeAlias = Callable[
 ]
 """Hook returning the set of image-processing hooks that can be skipped for a request."""
 
-AuthorizeHook: TypeAlias = Callable[[str, HeaderMap, str], bool]
+AuthorizeHook: TypeAlias = Callable[[str, HttpHeaders, str], bool]
 """Authorization hook returning `True` to allow access and `False` to deny it."""
 
 ResolveHook: TypeAlias = Callable[[str, str | None, str | None], ResolvedImage | None]
@@ -565,7 +473,7 @@ height.
 """
 
 PreFormatHook: TypeAlias = Callable[
-    [VImage, str, ImageInfo, ImageApiRequest], EncodedImageLike | None
+    [VImage, str, ImageInfo, ImageApiRequest], EncodedImage | None
 ]
 """Hook called before the image is encoded to the requested output format.
 
@@ -573,21 +481,38 @@ Return an `EncodedImage` to take over encoding or `None` to let Wolpi
 continue with its default encoding.
 """
 
+class WolpiExtensionDict(TypedDict):
+    """Dictionary form of a Wolpi extension.
+
+    All hooks except for `info` and `cleanup` are optional.
+    """
+
+    info: InfoHook
+    cleanup: CleanupHook
+    setup: NotRequired[SetupHook]
+    destroy: NotRequired[DestroyHook]
+    skippable_hooks: NotRequired[SkippableHooksHook]
+    authorize: NotRequired[AuthorizeHook]
+    resolve: NotRequired[ResolveHook]
+    augment_info_json: NotRequired[AugmentInfoJsonHook]
+    pre_process_image: NotRequired[ImageProcessingHook]
+    pre_scale: NotRequired[ImageProcessingHook]
+    pre_crop: NotRequired[ImageProcessingHook]
+    pre_rotate: NotRequired[ImageProcessingHook]
+    pre_quality: NotRequired[ImageProcessingHook]
+    pre_format: NotRequired[PreFormatHook]
+
 class WolpiExtension(ABC):
-    """Typing convenience base class for Python Wolpi extensions.
+    """Typing convenience base class for class-based Wolpi extensions.
 
     `info()` and `cleanup()` stay abstract because every extension must provide
     them. The remaining hook methods are modeled with default implementations so
     extension authors can subclass this type and only override the hooks they
     actually implement.
-
-    Wolpi's injected Python `wolpi` module exposes a matching helper class at
-    runtime, so extensions can subclass `WolpiExtension` both locally and when
-    executed inside Wolpi/GraalPy.
     """
 
     @abstractmethod
-    def info(self) -> ExtensionInfoLike:
+    def info(self) -> ExtensionInfo:
         """Return static metadata describing the extension."""
         ...
 
@@ -610,7 +535,7 @@ class WolpiExtension(ABC):
         """Return image-processing hooks that can be skipped for `request`."""
         ...
 
-    def authorize(self, identifier: str, headers: HeaderMap, client_ip: str) -> bool:
+    def authorize(self, identifier: str, headers: HttpHeaders, client_ip: str) -> bool:
         """Authorize access to `identifier` for the given request context."""
         ...
 
@@ -626,10 +551,14 @@ class WolpiExtension(ABC):
     def augment_info_json(
         self,
         identifier: str,
-        current_info_json: Mapping[str, JsonValue],
+        current_info_json: ImmutableJsonObject,
         iiif_version: int,
     ) -> JsonObject | None:
-        """Return a modified `info.json` object or `None` to keep the current one."""
+        """Return a **modified** `info.json` object or `None` to keep the current one.
+
+        Implementers must not modify the input `current_info_json` dict in place and instead
+        return a new dict.
+        """
         ...
 
     def pre_process_image(
@@ -692,13 +621,13 @@ class WolpiExtension(ABC):
         identifier: str,
         image_info: ImageInfo,
         request: ImageApiRequest,
-    ) -> EncodedImageLike | None:
+    ) -> EncodedImage | None:
         """Run before the image is encoded to the requested output format."""
         ...
 
 # Runtime-injected Wolpi context is exposed directly via `import wolpi` in GraalPy.
 config: Mapping[str, Any] | None
-"""Extension configuration object, if one was provided."""
+"""Immutable extension configuration object, if one was provided."""
 
 wolpiVersion: str
 """Wolpi version currently running."""
