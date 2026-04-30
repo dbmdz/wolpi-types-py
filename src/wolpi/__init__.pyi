@@ -11,7 +11,7 @@ from . import errors as errors
 from abc import ABC, abstractmethod
 import datetime as datetime
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any, Literal, Mapping, NotRequired, Protocol, TypedDict, TypeAlias, TypeVar
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, TypeAlias, TypeVar
 
 HttpStatusError = errors.HttpStatusError
 
@@ -256,8 +256,6 @@ class CustomSourceResolvedImage(Protocol):
         """
         ...
 
-    def __getattr__(self, name: str) -> Any: ...
-
 ResolvedImage: TypeAlias = (
     FilesystemResolvedImage
     | BinaryResolvedImage
@@ -371,7 +369,7 @@ class ExtensionLogger(Protocol):
         """Log a message at ERROR level."""
         ...
 
-class ImageRequestParserProxy(Protocol):
+class ImageRequestParser(Protocol):
     """Parser for IIIF Image API requests.
 
     Use this when implementing custom behavior that still wants to rely on
@@ -422,69 +420,55 @@ class ExtensionGuestContext(Protocol):
     logger: ExtensionLogger
     metrics: ExtensionMetrics
     vipsArena: Arena
-    imageRequestParser: ImageRequestParserProxy
+    imageRequestParser: ImageRequestParser
     httpClient: HttpClient
     baseUri: str | None
 
 InfoHook: TypeAlias = Callable[[], ExtensionInfo]
-"""Hook returning static extension metadata."""
+"""See `info` on :class:`WolpiExtension` for full documentation."""
 
 SetupHook: TypeAlias = Callable[[], None]
-"""Hook called when the extension is initialized."""
+"""See `setup` on :class:`WolpiExtension` for full documentation."""
 
 DestroyHook: TypeAlias = Callable[[], None]
-"""Hook called when the extension is destroyed."""
+"""See `destroy` on :class:`WolpiExtension` for full documentation."""
 
 CleanupHook: TypeAlias = Callable[[], None]
-"""Hook called after a request to clean up request-scoped extension state."""
+"""See `cleanup` on :class:`WolpiExtension` for full documentation."""
 
 SkippableHooksHook: TypeAlias = Callable[
     [ImageApiRequest], Iterable[ExtensionHooks] | None
 ]
-"""Hook returning the set of image-processing hooks that can be skipped for a request."""
+"""See `skippable_hooks` on :class:`WolpiExtension` for full documentation."""
 
 AuthorizeHook: TypeAlias = Callable[[str, HttpHeaders, str], bool]
-"""Authorization hook returning `True` to allow access and `False` to deny it."""
+"""See `authorize` on :class:`WolpiExtension` for full documentation."""
 
 ResolveHook: TypeAlias = Callable[[str, str | None, str | None], ResolvedImage | None]
-"""Resolve an image identifier to an image source.
-
-The hook receives client caching headers, if present, and may also return
-`imageInfo` and `cacheInfo` metadata to avoid extra probing by Wolpi.
-"""
+"""See `resolve` on :class:`WolpiExtension` for full documentation."""
 
 AugmentInfoJsonHook: TypeAlias = Callable[
     [str, Mapping[str, JsonValue], int], JsonObject | None
 ]
-"""Augment the generated `info.json` response.
-
-Return a new object rather than mutating the input object in place.
-"""
+"""See `augment_info_json` on :class:`WolpiExtension` for full documentation."""
 
 ImageProcessingHook: TypeAlias = Callable[
     [VImage, str, ImageInfo, ImageApiRequest], VImage | None
 ]
-"""Hook signature shared by image-processing hooks such as `pre_process_image`,
-`pre_scale`, `pre_crop`, `pre_rotate`, and `pre_quality`.
-
-For `pre_process_image` specifically, the returned image must keep the same
-dimensions as the input image. Wolpi ignores results with different width or
-height.
-"""
+"""See the image-processing hooks on :class:`WolpiExtension` for full documentation."""
 
 PreFormatHook: TypeAlias = Callable[
     [VImage, str, ImageInfo, ImageApiRequest], EncodedImage | None
 ]
-"""Hook called before the image is encoded to the requested output format.
-
-Return an `EncodedImage` to take over encoding or `None` to let Wolpi
-continue with its default encoding.
-"""
+"""See `pre_format` on :class:`WolpiExtension` for full documentation."""
 
 class WolpiExtensionDict(TypedDict):
     """Dictionary form of a Wolpi extension.
 
-    All hooks except for `info` and `cleanup` are optional.
+    Useful for entry points that return a hook dictionary instead of a
+    :class:`WolpiExtension` instance. Only `info` and `cleanup` are
+    required. The hook fields follow the same semantics as the corresponding
+    methods on :class:`WolpiExtension`.
     """
 
     info: InfoHook
@@ -513,30 +497,69 @@ class WolpiExtension(ABC):
 
     @abstractmethod
     def info(self) -> ExtensionInfo:
-        """Return static metadata describing the extension."""
+        """Return static metadata describing the extension.
+
+        Wolpi calls this during extension discovery and startup in a separate
+        runtime context. Do not use it for initialization or request-scoped
+        state.
+
+        :return: Static extension metadata.
+        """
         ...
 
     @abstractmethod
     def cleanup(self) -> None:
-        """Reset any request-scoped state accumulated during request handling."""
+        """Reset any request-scoped state accumulated during request handling.
+
+        This hook is required even for extensions that keep no per-request
+        state to force explicit consideration of cleanup needs.
+        """
         ...
 
     def setup(self) -> None:
-        """Run initialization logic before the extension instance handles requests."""
+        """Run expensive initialization, once, outside the request-response cycle.
+
+        Use this for long-lived resources that should not be created during a
+        request, like database connections.
+        """
         ...
 
     def destroy(self) -> None:
-        """Clean up resources previously allocated in `setup()`."""
+        """Clean up resources previously allocated in `setup()`.
+
+        This hook runs when the extension instance is shut down, not after each
+        request.
+        """
         ...
 
     def skippable_hooks(
         self, request: ImageApiRequest
     ) -> Iterable[ExtensionHooks] | None:
-        """Return image-processing hooks that can be skipped for `request`."""
+        """Return image-processing hooks that can be skipped for `request`.
+
+        Returned hooks are not run for that request. This helps ensure that we
+        hit Wolpi's fast paths for image processing when an extension clearly
+        states that it doesn't need to touch the image processing pipeline for a
+        given request.
+
+        :param request: The current IIIF request as an :class:`ImageApiRequest` object.
+        :return: Hook names that Wolpi may skip for this request, or `None` if no hooks
+            can be skipped..
+        """
         ...
 
     def authorize(self, identifier: str, headers: HttpHeaders, client_ip: str) -> bool:
-        """Authorize access to `identifier` for the given request context."""
+        """Authorize access to `identifier` for the given request context.
+
+        `headers` contains all request header values and `client_ip` is the
+        original client IP after proxy resolution. If multiple extensions
+        implement this hook, all of them must allow the request.
+
+        :param identifier: The image identifier being requested.
+        :param headers: Request headers as :class:`HttpHeaders`.
+        :param client_ip: Original client IP after proxy resolution.
+        :return: `True` to allow access, `False` to deny it.
+        """
         ...
 
     def resolve(
@@ -545,7 +568,24 @@ class WolpiExtension(ABC):
         client_etag: str | None,
         client_last_modified: str | None,
     ) -> ResolvedImage | None:
-        """Resolve an image identifier to an image source or return `None`."""
+        """Resolve `identifier` to a supported :class:`ResolvedImage` or return `None`.
+
+        The cache validator arguments mirror the client's conditional request
+        headers when present. Resolver return dicts may include nested
+        `imageInfo` and `cacheInfo` dicts to avoid extra probing for
+        `info.json`; `SourceNotModified` forces a 304 response.
+
+        If this method returns a :class:`HttpResolvedImage` or a
+        :class:`FilesystemResolvedImage`, Wolpi will handle the check if a 304
+        Not Modified response can be sent based on the provided metadata and the
+        client's validators, so extensions only need to return
+        :class:`SourceNotModified` if they have custom logic for determining staleness.
+
+        :param identifier: The image identifier to resolve.
+        :param client_etag: Client `ETag` validator, if present.
+        :param client_last_modified: Client `Last-Modified` validator, if present.
+        :return: A supported :class:`ResolvedImage` shape or `None`.
+        """
         ...
 
     def augment_info_json(
@@ -554,10 +594,17 @@ class WolpiExtension(ABC):
         current_info_json: ImmutableJsonObject,
         iiif_version: int,
     ) -> JsonObject | None:
-        """Return a **modified** `info.json` object or `None` to keep the current one.
+        """Return a new `info.json` object or `None` to keep the current one.
 
-        Implementers must not modify the input `current_info_json` dict in place and instead
-        return a new dict.
+        `current_info_json` is read-only, return a modified copy if you want to change it.
+        If multiple extensions implement this hook, each receives the previous
+        extension's result in configuration order.
+
+        :param identifier: The image identifier.
+        :param current_info_json: The current `info.json` object as an
+            immutable mapping.
+        :param iiif_version: Numeric IIIF Image API version.
+        :return: A new :class:`JsonObject` or `None` to keep the current value.
         """
         ...
 
@@ -570,8 +617,26 @@ class WolpiExtension(ABC):
     ) -> VImage | None:
         """Run before the standard processing pipeline.
 
-        The returned image must keep the same dimensions as the input image.
-        Wolpi ignores results with different width or height.
+        Perform mutations on the `image` before any of Wolpi's standard
+        processing steps run. This is the place to apply global image
+        transformations that don't map cleanly to the crop/scale/rotate/quality
+        steps, like watermarking.
+
+        The returned image must keep the same dimensions as the input image or
+        Wolpi ignores it. If multiple extensions implement this hook, each receives
+        the previous extension's result, if it was not `None`.
+
+        `image_info` describes the original input image. `image` is either the
+        original image (if the extension is the first to be called), or the
+        result of the previous extension's `pre_process` result, if it was not
+        `None`.
+
+        :param image: Current pipeline image as a :class:`VImage` host object.
+        :param identifier: The image identifier.
+        :param image_info: Source image metadata as :class:`ImageInfo`.
+        :param request: Current IIIF request as :class:`ImageApiRequest`.
+        :return: A replacement :class:`VImage` or `None` to keep the
+            existing pipeline image.
         """
         ...
 
@@ -582,7 +647,24 @@ class WolpiExtension(ABC):
         image_info: ImageInfo,
         request: ImageApiRequest,
     ) -> VImage | None:
-        """Override or augment the image scaling step."""
+        """Override or augment the image scaling step.
+
+        `image_info` describes the original input image. If multiple extensions
+        implement this hook, the first non-`None` result wins; returning
+        `None` falls back to the next extension or Wolpi's default scaling.
+
+        If you need to run Wolpi's standard scaling logic and then apply
+        additional transformations, use the :class:`ImageRequestParser` (available
+        in the `imageRequestParser` attribute on the `wolpi` module) to parse the
+        `request.sizeSpec` into a target :class:`ImageSize`.
+
+        :param image: Current pipeline image as a :class:`VImage` host object.
+        :param identifier: The image identifier.
+        :param image_info: Source image metadata as :class:`ImageInfo`.
+        :param request: Current IIIF request as :class:`ImageApiRequest`.
+        :return: A scaled :class:`VImage` or `None` to keep Wolpi's
+            default scaling behavior.
+        """
         ...
 
     def pre_crop(
@@ -592,7 +674,24 @@ class WolpiExtension(ABC):
         image_info: ImageInfo,
         request: ImageApiRequest,
     ) -> VImage | None:
-        """Override or augment the image crop step."""
+        """Override or augment the image crop step.
+
+        `image_info` describes the original input image. If multiple extensions
+        implement this hook, the first non-`None` result wins; returning
+        `None` falls back to the next extension or Wolpi's default cropping.
+
+        If you need to run Wolpi's standard cropping logic and then apply
+        additional transformations, use the :class:`ImageRequestParser` (available
+        in the `imageRequestParser` attribute on the `wolpi` module) to parse the
+        `request.cropSpec` into a target :class:`CropRectangle`.
+
+        :param image: Current pipeline image as a :class:`VImage` host object.
+        :param identifier: The image identifier.
+        :param image_info: Source image metadata as :class:`ImageInfo`.
+        :param request: Current IIIF request as :class:`ImageApiRequest`.
+        :return: A cropped :class:`VImage` or `None` to keep Wolpi's
+            default cropping behavior.
+        """
         ...
 
     def pre_rotate(
@@ -602,7 +701,24 @@ class WolpiExtension(ABC):
         image_info: ImageInfo,
         request: ImageApiRequest,
     ) -> VImage | None:
-        """Override or augment the image rotation step."""
+        """Override or augment the image rotation step.
+
+        `image_info` describes the original input image. If multiple extensions
+        implement this hook, the first non-`None` result wins; returning
+        `None` falls back to the next extension or Wolpi's default rotation.
+
+        If you need to run Wolpi's standard rotation logic and then apply
+        additional transformations, use the :class:`ImageRequestParser` (available
+        in the `imageRequestParser` attribute on the `wolpi` module) to parse the
+        `request.rotationSpec` into a target :class:`Rotation`.
+
+        :param image: Current pipeline image as a :class:`VImage` host object.
+        :param identifier: The image identifier.
+        :param image_info: Source image metadata as :class:`ImageInfo`.
+        :param request: Current IIIF request as :class:`ImageApiRequest`.
+        :return: A replacement :class:`VImage` or `None` to keep Wolpi's
+            default rotation behavior.
+        """
         ...
 
     def pre_quality(
@@ -612,7 +728,25 @@ class WolpiExtension(ABC):
         image_info: ImageInfo,
         request: ImageApiRequest,
     ) -> VImage | None:
-        """Override or augment the image quality step."""
+        """Override or augment the image quality step.
+
+        `image_info` describes the original input image. If multiple extensions
+        implement this hook, the first non-`None` result wins; returning
+        `None` falls back to the next extension or Wolpi's default quality
+        handling.
+
+        If you need to run Wolpi's standard quality logic and then apply
+        additional transformations, use the :class:`ImageRequestParser` (available
+        in the `imageRequestParser` attribute on the `wolpi` module) to parse the
+        `request.qualitySpec` into a target :class:`IIIFQuality`.
+
+        :param image: Current pipeline image as a :class:`VImage` host object.
+        :param identifier: The image identifier.
+        :param image_info: Source image metadata as :class:`ImageInfo`.
+        :param request: Current IIIF request as :class:`ImageApiRequest`.
+        :return: A replacement :class:`VImage` or `None` to keep Wolpi's
+            default quality handling.
+        """
         ...
 
     def pre_format(
@@ -622,7 +756,20 @@ class WolpiExtension(ABC):
         image_info: ImageInfo,
         request: ImageApiRequest,
     ) -> EncodedImage | None:
-        """Run before the image is encoded to the requested output format."""
+        """Encode the processed image before Wolpi applies its default encoder.
+
+        Return an :class:`EncodedImage` with encoded data, the response content
+        type, and optional :class:`HttpHeaders`. If multiple extensions implement
+        this hook, the first non-`None` result wins; returning `None` keeps the
+        default encoder.
+
+        :param image: Current pipeline image as a :class:`VImage` host object.
+        :param identifier: The image identifier.
+        :param image_info: Source image metadata as :class:`ImageInfo`.
+        :param request: Current IIIF request as :class:`ImageApiRequest`.
+        :return: An :class:`EncodedImage` or `None` to keep Wolpi's
+            default encoding logic.
+        """
         ...
 
 # Runtime-injected Wolpi context is exposed directly via `import wolpi` in GraalPy.
@@ -644,7 +791,7 @@ metrics: ExtensionMetrics
 vipsArena: Arena
 """Opaque arena handle for vips-related host APIs."""
 
-imageRequestParser: ImageRequestParserProxy
+imageRequestParser: ImageRequestParser
 """Helper for parsing official IIIF request syntax."""
 
 httpClient: HttpClient
