@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wolpi-extension-api"
+version = "0.1.0"
+description = "Type hints for the Wolpi Python extension API"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "dbmdz" }]
+keywords = ["wolpi", "iiif", "types", "graalpy"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["java", "wolpi"]
+
+[tool.setuptools.package-data]
+wolpi = ["py.typed", "*.pyi"]
+java = ["py.typed", "*.pyi"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.11",
+]
