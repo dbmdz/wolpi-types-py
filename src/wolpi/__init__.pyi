@@ -231,36 +231,10 @@ class SourceNotModified(TypedDict):
     imageInfo: NotRequired[ImageInfoDict]
     cacheInfo: NotRequired[CacheInfoDict]
 
-class CustomSourceResolvedImage(Protocol):
-    """Custom data source returned from `resolve()`.
-
-    This can be more efficient for large images from backends such as databases
-    or object-storage systems. Metadata may be attached as additional attributes.
-    """
-
-    def onRead(self, length: int) -> bytes | bytearray:
-        """Read up to `length` bytes from the current position.
-
-        The returned buffer is copied, so it is safe to reuse internal buffers
-        for subsequent calls.
-        """
-        ...
-
-    def onSeek(self, offset: int, whence: int) -> int:
-        """Seek to a new position.
-
-        `whence` is:
-        - `0`: beginning of file
-        - `1`: current position
-        - `2`: end of file
-        """
-        ...
-
 ResolvedImage: TypeAlias = (
     FilesystemResolvedImage
     | BinaryResolvedImage
     | HttpResolvedImage
-    | CustomSourceResolvedImage
     | SourceNotModified
 )
 """Value returned from the `resolve()` hook."""
